@@ -7,6 +7,22 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- `hecate_mods.moderate_room` crashed (`badmatch`) instead of cleanly
+  refusing a malformed `room_topic`: `moderate_room_v1:new/1` only checked
+  `is_binary/1`, and the actual format regex only ran in `validate/1` --
+  but `dispatch/1` computes the aggregate's stream id (which
+  pattern-matches the exact `"agents.room."` prefix) BEFORE the aggregate,
+  and therefore `validate/1`, ever runs. Any external caller sending a
+  room_topic not shaped `agents.room.<32hex>` crashed the responder
+  process instead of getting `{ok => 0, error => invalid_room_topic}`.
+  Found while addressing a Fable review on the (separate, still in
+  review) `invite_agent_to_room` PR, which had the same bug in its own
+  new code -- fixed there too, and the format check extracted into a
+  shared `room_topic` module so it can't drift between commands again.
+  15 new tests.
+
 ### Added
 
 - MVP: the `moderate_room` mesh capability and the `guide_room_lifecycle`
