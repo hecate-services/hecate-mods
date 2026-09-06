@@ -9,31 +9,41 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
-- Fable review on #5 found and this fixes, all in the `invite_agent_to_room`
-  work: (1) the requester's ownership proof was bound only to the fixed
-  capability name, not the specific room/target, so a captured proof could
-  be replayed to invite a different target or into a different room the
-  same requester is also in -- `invite_agent_to_room_v1:procedure/2` now
-  binds to both; (2) `target_node_id`/`requester_node_id` were not
-  case-normalized, and macula-mcp's own `ring_service.ts` compares node
-  ids with exact case-sensitive equality, so an uppercase-hex target
-  (valid per this service's own hex64 check) would silently fail to route
-  or verify -- normalized to lowercase at construction and again at the
-  wire-building boundary in `ring_delivery`; (3) `ring_delivery` crashed
-  with `function_clause` if `hecate_om_identity:keypair/0` returned
-  `{error, not_booted}` (a real, documented startup race) rather than only
-  the `no_keypair` case it had a clause for; (4) `invite_agent_to_room_v1`
-  (and, found to be a pre-existing instance of the same bug,
-  `moderate_room_v1` from #1) had no room-topic format check in `new/1`,
-  only in `validate/1` -- but `dispatch/1` computes the aggregate's stream
-  id, which crashes (`badmatch`) on a malformed topic, BEFORE `validate/1`
-  ever runs, so a malformed `room_topic` crashed the responder instead of
-  getting a clean refusal. Extracted the check into a shared `room_topic`
-  module so it can't drift between commands again. Also deduplicated the
-  three byte-identical `reason_to_binary/1` helpers into
-  `hecate_mods_reason`. 31 new/updated tests target these fixes directly
-  (forged-target replay, forged-room replay, malformed room-topic on both
-  commands, case-normalization on both fields).
+- `hecate_mods.moderate_room` crashed (`badmatch`) instead of cleanly
+  refusing a malformed `room_topic`: `moderate_room_v1:new/1` only checked
+  `is_binary/1`, and the actual format regex only ran in `validate/1` --
+  but `dispatch/1` computes the aggregate's stream id (which
+  pattern-matches the exact `"agents.room."` prefix) BEFORE the aggregate,
+  and therefore `validate/1`, ever runs. Any external caller sending a
+  room_topic not shaped `agents.room.<32hex>` crashed the responder
+  process instead of getting `{ok => 0, error => invalid_room_topic}`.
+  Found while addressing a Fable review on the (separate, still in
+  review) `invite_agent_to_room` PR, which had the same bug in its own
+  new code (see below) -- the format check was extracted into a shared
+  `room_topic` module so it can't drift between commands again. 15 new
+  tests. Shipped as a trunk-based hotfix directly to `main`, independent
+  of the PR below.
+- Fable review on #5 found and this fixes, the rest of it specific to the
+  `invite_agent_to_room` work itself: (1) the requester's ownership proof
+  was bound only to the fixed capability name, not the specific
+  room/target, so a captured proof could be replayed to invite a
+  different target or into a different room the same requester is also
+  in -- `invite_agent_to_room_v1:procedure/2` now binds to both; (2)
+  `target_node_id`/`requester_node_id` were not case-normalized, and
+  macula-mcp's own `ring_service.ts` compares node ids with exact
+  case-sensitive equality, so an uppercase-hex target (valid per this
+  service's own hex64 check) would silently fail to route or verify --
+  normalized to lowercase at construction and again at the wire-building
+  boundary in `ring_delivery`; (3) `ring_delivery` crashed with
+  `function_clause` if `hecate_om_identity:keypair/0` returned `{error,
+  not_booted}` (a real, documented startup race) rather than only the
+  `no_keypair` case it had a clause for; (4) `invite_agent_to_room_v1`
+  had the same missing-room-topic-format-check-in-`new/1` bug as
+  `moderate_room_v1` above -- fixed here using the same shared
+  `room_topic` module. Also deduplicated the three byte-identical
+  `reason_to_binary/1` helpers into `hecate_mods_reason`. 16 further
+  new/updated tests target these fixes directly (forged-target replay,
+  forged-room replay, case-normalization on both fields).
 
 ### Added
 
