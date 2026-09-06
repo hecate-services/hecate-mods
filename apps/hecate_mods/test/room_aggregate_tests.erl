@@ -45,6 +45,36 @@ end_cmd(Reason) ->
 
 moderated_state() -> run(new_state(), [moderate_cmd()]).
 
+%% A real generated keypair, signing exactly the way
+%% `room_ownership_proof_tests' does -- a genuinely independent
+%% reimplementation of the signing side, not a call into the module
+%% under test's own private helper.
+keypair() -> macula_identity:generate().
+node_id_hex(KeyPair) -> binary:encode_hex(macula_identity:node_id(KeyPair), lowercase).
+
+sign(KeyPair, NodeIdHex, Timestamp, Procedure) ->
+    NodeId = binary:decode_hex(NodeIdHex),
+    Message = <<NodeId/binary, Timestamp:64/big, Procedure/binary>>,
+    binary:encode_hex(macula_identity:sign(Message, KeyPair), lowercase).
+
+%% Bound to `RoomTopic'/`TargetNodeIdHex', matching
+%% `invite_agent_to_room_v1:procedure/2' -- a proof for one invite must
+%% not verify for a different target or a different room
+%% (macula-io/hecate-mods#5).
+proof(KeyPair, NodeIdHex, RoomTopic, TargetNodeIdHex) ->
+    Ts = erlang:system_time(millisecond),
+    Procedure = invite_agent_to_room_v1:procedure(RoomTopic, TargetNodeIdHex),
+    #{timestamp => Ts, signature => sign(KeyPair, NodeIdHex, Ts, Procedure)}.
+
+invite_cmd(RequesterKeyPair, RequesterNodeIdHex, TargetNodeIdHex) ->
+    invite_cmd(RequesterKeyPair, RequesterNodeIdHex, TargetNodeIdHex, ?ROOM).
+
+invite_cmd(RequesterKeyPair, RequesterNodeIdHex, TargetNodeIdHex, RoomTopic) ->
+    #{command_type => invite_agent_to_room_v1, room_topic => RoomTopic,
+      requester_node_id => RequesterNodeIdHex, target_node_id => TargetNodeIdHex,
+      purpose => <<"come help debug this">>,
+      proof => proof(RequesterKeyPair, RequesterNodeIdHex, RoomTopic, TargetNodeIdHex)}.
+
 %%--------------------------------------------------------------------
 %% moderate_room
 %%--------------------------------------------------------------------
@@ -119,6 +149,111 @@ end_twice_is_rejected_test() ->
     S1 = run(moderated_state(), [end_cmd()]),
     {Result, _} = step(S1, end_cmd()),
     ?assertEqual({error, moderation_ended}, Result).
+
+%%--------------------------------------------------------------------
+%% invite_agent_to_room (macula-io/hecate-mods#2)
+%%--------------------------------------------------------------------
+
+invite_before_moderation_is_rejected_test() ->
+    Alice = keypair(),
+    AliceHex = node_id_hex(Alice),
+    {Result, _} = step(new_state(), invite_cmd(Alice, AliceHex, ?BOB)),
+    ?assertEqual({error, not_moderated}, Result).
+
+%% The actual point of this whole feature: a genuine, verified,
+%% CURRENT participant may invite someone.
+invite_by_a_current_participant_succeeds_test() ->
+    Alice = keypair(),
+    AliceHex = node_id_hex(Alice),
+    S1 = run(moderated_state(), [joined_cmd(AliceHex)]),
+    {{ok, [Event]}, _S2} = step(S1, invite_cmd(Alice, AliceHex, ?BOB)),
+    ?assertEqual(<<"agent_invited_v1">>, maps:get(event_type, Event)),
+    ?assertEqual(AliceHex, maps:get(requester_node_id, Event)),
+    ?assertEqual(?BOB, maps:get(target_node_id, Event)).
+
+%% Fable review finding, hecate-mods#5: a proof is bound to the SPECIFIC
+%% target -- observing (or being party to) one valid, genuine invite
+%% must not let anyone replay that same {timestamp, signature} pair to
+%% invite a DIFFERENT target, even though the requester and room are
+%% identical and the timestamp is still within the skew window.
+invite_replaying_a_genuine_proof_against_a_different_target_is_rejected_test() ->
+    Alice = keypair(),
+    AliceHex = node_id_hex(Alice),
+    Carol = keypair(),
+    CarolHex = node_id_hex(Carol),
+    S1 = run(moderated_state(), [joined_cmd(AliceHex)]),
+    GenuineCmd = invite_cmd(Alice, AliceHex, ?BOB),
+    ReplayedCmd = GenuineCmd#{target_node_id => CarolHex},
+    {Result, _} = step(S1, ReplayedCmd),
+    ?assertEqual({error, bad_signature}, Result).
+
+%% Same finding, the room-scoped half: a proof genuinely signed for
+%% inviting Bob into ROOM must not also authorize inviting Bob into a
+%% DIFFERENT room Alice happens to also be a participant of.
+invite_replaying_a_genuine_proof_against_a_different_room_is_rejected_test() ->
+    OtherRoom = <<"agents.room.cafebabecafebabecafebabecafebabe">>,
+    Alice = keypair(),
+    AliceHex = node_id_hex(Alice),
+    S1 = run(moderated_state(), [joined_cmd(AliceHex)]),
+    {ok, OtherState} = room_aggregate:init(OtherRoom),
+    OtherModerated = run(OtherState, [
+        #{command_type => moderate_room_v1, room_topic => OtherRoom, idle_timeout_hours => 96},
+        #{command_type => note_participant_joined_v1, room_topic => OtherRoom, node_id => AliceHex}
+    ]),
+    GenuineCmd = invite_cmd(Alice, AliceHex, ?BOB, OtherRoom),
+    ReplayedCmd = GenuineCmd#{room_topic => ?ROOM},
+    {ResultOnOriginalRoom, _} = step(S1, ReplayedCmd),
+    ?assertEqual({error, bad_signature}, ResultOnOriginalRoom),
+    %% Sanity: the genuine proof DOES work on the room it was actually
+    %% signed for, confirming the rejection above is about binding, not
+    %% some unrelated break.
+    {{ok, _}, _} = step(OtherModerated, GenuineCmd).
+
+%% A genuinely verified identity that simply never joined this room.
+invite_by_a_non_participant_is_rejected_test() ->
+    Carol = keypair(),
+    CarolHex = node_id_hex(Carol),
+    S1 = moderated_state(),
+    {Result, _} = step(S1, invite_cmd(Carol, CarolHex, ?BOB)),
+    ?assertEqual({error, not_a_participant}, Result).
+
+%% A participant who has since left is no longer authorized -- the
+%% participant set is LIVE state, not "was ever a member."
+invite_by_a_participant_who_left_is_rejected_test() ->
+    Alice = keypair(),
+    AliceHex = node_id_hex(Alice),
+    S1 = run(moderated_state(), [joined_cmd(AliceHex), left_cmd(AliceHex)]),
+    {Result, _} = step(S1, invite_cmd(Alice, AliceHex, ?BOB)),
+    ?assertEqual({error, not_a_participant}, Result).
+
+%% THE finding this whole design exists to prevent: claiming to be a
+%% real participant without proving it. Eve is not in the room; she
+%% signs with her OWN key but writes Alice's (a real participant's)
+%% node_id into requester_node_id. The signature check must fail
+%% BEFORE the participant check ever runs, or this would wrongly
+%% succeed as Alice.
+invite_with_a_forged_requester_identity_is_rejected_test() ->
+    Alice = keypair(),
+    AliceHex = node_id_hex(Alice),
+    Eve = keypair(),
+    S1 = run(moderated_state(), [joined_cmd(AliceHex)]),
+    ForgedCmd = invite_cmd(Eve, AliceHex, ?BOB),
+    {Result, _} = step(S1, ForgedCmd),
+    ?assertEqual({error, bad_signature}, Result).
+
+invite_after_ended_is_rejected_test() ->
+    Alice = keypair(),
+    AliceHex = node_id_hex(Alice),
+    S1 = run(moderated_state(), [joined_cmd(AliceHex), end_cmd()]),
+    {Result, _} = step(S1, invite_cmd(Alice, AliceHex, ?BOB)),
+    ?assertEqual({error, moderation_ended}, Result).
+
+invite_yourself_is_rejected_test() ->
+    Alice = keypair(),
+    AliceHex = node_id_hex(Alice),
+    S1 = run(moderated_state(), [joined_cmd(AliceHex)]),
+    {Result, _} = step(S1, invite_cmd(Alice, AliceHex, AliceHex)),
+    ?assertEqual({error, cannot_invite_self}, Result).
 
 %%--------------------------------------------------------------------
 %% Unknown commands

@@ -17,7 +17,7 @@ handle_request(Payload, State) ->
     Params = params(Payload),
     Reply = case moderate_room_v1:new(Params) of
         {ok, Cmd} -> reply_for(maybe_moderate_room:dispatch(Cmd));
-        {error, Reason} -> #{ok => 0, error => reason_to_binary(Reason)}
+        {error, Reason} -> #{ok => 0, error => hecate_mods_reason:to_binary(Reason)}
     end,
     {reply, Reply, State}.
 
@@ -36,8 +36,4 @@ reply_for({ok, _Version, _Events}) ->
     active_rooms_reaper:reconcile_now(),
     #{ok => 1};
 reply_for({error, Reason}) ->
-    #{ok => 0, error => reason_to_binary(Reason)}.
-
-reason_to_binary(R) when is_atom(R) -> atom_to_binary(R, utf8);
-reason_to_binary(R) when is_binary(R) -> R;
-reason_to_binary(R) -> iolist_to_binary(io_lib:format("~p", [R])).
+    #{ok => 0, error => hecate_mods_reason:to_binary(Reason)}.

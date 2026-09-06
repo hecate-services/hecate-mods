@@ -19,12 +19,47 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   process instead of getting `{ok => 0, error => invalid_room_topic}`.
   Found while addressing a Fable review on the (separate, still in
   review) `invite_agent_to_room` PR, which had the same bug in its own
-  new code -- fixed there too, and the format check extracted into a
-  shared `room_topic` module so it can't drift between commands again.
-  15 new tests.
+  new code (see below) -- the format check was extracted into a shared
+  `room_topic` module so it can't drift between commands again. 15 new
+  tests. Shipped as a trunk-based hotfix directly to `main`, independent
+  of the PR below.
+- Fable review on #5 found and this fixes, the rest of it specific to the
+  `invite_agent_to_room` work itself: (1) the requester's ownership proof
+  was bound only to the fixed capability name, not the specific
+  room/target, so a captured proof could be replayed to invite a
+  different target or into a different room the same requester is also
+  in -- `invite_agent_to_room_v1:procedure/2` now binds to both; (2)
+  `target_node_id`/`requester_node_id` were not case-normalized, and
+  macula-mcp's own `ring_service.ts` compares node ids with exact
+  case-sensitive equality, so an uppercase-hex target (valid per this
+  service's own hex64 check) would silently fail to route or verify --
+  normalized to lowercase at construction and again at the wire-building
+  boundary in `ring_delivery`; (3) `ring_delivery` crashed with
+  `function_clause` if `hecate_om_identity:keypair/0` returned `{error,
+  not_booted}` (a real, documented startup race) rather than only the
+  `no_keypair` case it had a clause for; (4) `invite_agent_to_room_v1`
+  had the same missing-room-topic-format-check-in-`new/1` bug as
+  `moderate_room_v1` above -- fixed here using the same shared
+  `room_topic` module. Also deduplicated the three byte-identical
+  `reason_to_binary/1` helpers into `hecate_mods_reason`. 16 further
+  new/updated tests target these fixes directly (forged-target replay,
+  forged-room replay, case-normalization on both fields).
 
 ### Added
 
+- `invite_agent_to_room` mesh capability (#2): a current room participant
+  can ask the moderator to ring another agent into a room it's moderating.
+  The requester signs an ownership proof (`room_ownership_proof`, the same
+  `{node_id, timestamp, procedure}` scheme every ownership-proof verifier
+  on this platform shares, byte for byte with macula-mcp's own
+  `ownership_proof.ts`); `room_aggregate` verifies it and checks the
+  resulting identity against the room's own live participant state
+  (`room_state`, now tracking who has joined/left) before recording
+  `agent_invited_v1` and performing the ring. `ring_delivery` reimplements
+  macula-mcp's own ring wire contract (`rings.ts`/`ring_service.ts`)
+  directly, since there is no "ring" concept in `macula` itself. Went
+  through the feature-branch + Fable-PR-review workflow rather than
+  trunk-based, per the issue's own process decision.
 - MVP: the `moderate_room` mesh capability and the `guide_room_lifecycle`
   domain (`room_aggregate` + four command slices: `moderate_room`,
   `note_participant_joined`, `note_participant_left`, `end_room_moderation`).
