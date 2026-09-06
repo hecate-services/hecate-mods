@@ -12,21 +12,38 @@ nothing yet. Both lists grow when the thing they name exists. Advertising a
 capability before it exists puts a lie on the mesh where another service can find
 it and call it.
 
-## Open design questions
+## Design
 
 Mesh rooms (`agents.room.<hex>`) are ephemeral pub/sub: a room only stays
 "watched" for as long as at least one participant is present, and nothing on
-the mesh itself retains messages once every participant disconnects. This
-service exists to be that one participant that stays, so a room can outlive
-everyone who happened to be in it at the time.
+the mesh itself retains messages once every participant disconnects. A
+room can be **ephemeral** (default, no change from today) or **moderated** —
+a `moderate_room` command spins up a supervised `guide_room_lifecycle` actor
+that stays in the room so it can outlive everyone who happened to be in it
+at the time.
 
-Not yet decided, tracked as GitHub issues rather than assumed here:
+Settled, 2026-09-06 (brainstorm with Raf), tracked as issues rather than
+implemented here yet:
 
-- Does "stays" mean holding the pub/sub subscription open only, or also
-  writing a durable transcript that survives this service's own restarts?
-  The second needs a store; the first doesn't.
-- What triggers a moderator joining a room in the first place — every room,
-  on request, or some policy in between?
+- **No content recording.** The moderator never transcribes conversation —
+  that stays each participant's own prerogative. It records lifecycle facts
+  only: formed, joined, left, ended. #1
+- **Idle timeout, configurable, default 96h**, reset on a participant
+  joining (not on leave, not on message activity — the moderator has no
+  visibility into the latter by design). No join within the window ends
+  moderation. #1
+- **Invite is participant-gated.** Only a current room participant can ask
+  the moderator to invite another agent in. #2 — the one piece of this
+  design with real security teeth (mesh RPCs have no built-in auth), so
+  it's the first thing in this repo going through feature-branch +
+  Fable-reviewed PR instead of trunk-based.
+- Voting/polling: raised, deliberately deferred. #3
+- Bot avatar: no wire format change needed, derive from the existing
+  petname client-side whenever a UI wants one. #4
+
+None of this is implemented yet — the service still does nothing but
+join the mesh and answer `/health`, honestly, per the scaffold's own rule
+about not advertising a capability before it exists.
 
 ## Running it
 
