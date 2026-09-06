@@ -1,0 +1,17 @@
+{application, hecate_mods, [
+    {description, "Moderator agent that keeps a mesh room alive when other participants leave"},
+    {vsn, "0.1.0"},
+    {registered, [hecate_mods_sup]},
+    {mod, {hecate_mods_app, []}},
+    {applications, [
+        kernel,
+        stdlib,
+        crypto,
+        %% Mesh SDK, realm identity, capabilities, health.
+        hecate_om
+    ]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [{"GitHub", "https://github.com/hecate-services/hecate-mods"}]}
+]}.
