@@ -82,23 +82,33 @@ probe({error, no_read_model}) -> {down, no_read_model}.
 opened({ok, _Info}) -> ok;
 opened({error, Reason}) -> {down, {read_model_unavailable, Reason}}.
 
-%% WHAT THIS SERVICE ANNOUNCES IT CAN DO. One mesh RPC: moderate a room.
-%% Ungated for MVP -- any caller may ask any room be moderated (mirrors
-%% mesh rooms' own trust model: joining/opening a room needs no
-%% authorization today either). `invite_agent_to_room' (#2) is the one
-%% piece of this design with real security teeth and is deliberately not
-%% built here.
+%% WHAT THIS SERVICE ANNOUNCES IT CAN DO. `moderate_room' is ungated
+%% (mirrors mesh rooms' own trust model: opening/joining needs no
+%% authorization either). `invite_agent_to_room' (#2) is the one
+%% capability with real security teeth: the responder requires a signed
+%% ownership proof and `room_aggregate' verifies it against the room's
+%% own participant state before anything is invited -- see
+%% `invite_agent_to_room_responder' and `room_ownership_proof'.
 capabilities() ->
     [#{name => <<"hecate_mods.moderate_room">>, version => 1,
-       handler => {moderate_room_responder, []}}].
+       handler => {moderate_room_responder, []}},
+     #{name => <<"hecate_mods.invite_agent_to_room">>, version => 1,
+       handler => {invite_agent_to_room_responder, []}}].
 
 %% THE AUTHORITY THIS SERVICE ASKS THE REALM FOR, and deliberately nothing more.
 %% `agents.room.*' is a wildcard, not an enumeration, for the same reason
 %% `hecate-mail' declares `mailboxes/*': which rooms exist is decided at
 %% runtime by callers of `moderate_room', never known at boot.
+%%
+%% NOT listed here: the outgoing `agent.<target>.ring' call
+%% `ring_delivery' makes. It runs under the mesh's own default (all-zero)
+%% realm, not this scope's -- left as an open question for review rather
+%% than guessed at, since this scope's own resource semantics are
+%% specific to hecate-mods' OWN realm and it is not yet clear whether or
+%% how a cross-realm outbound call is meant to be declared here at all.
 identity_spec() ->
     #{scope => <<"hecate-mods">>,
-      actions => [<<"moderate_room">>],
+      actions => [<<"moderate_room">>, <<"invite_agent_to_room">>],
       resources => [<<"agents.room.*">>],
       ttl_days => 30}.
 

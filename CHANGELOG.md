@@ -9,6 +9,19 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- `invite_agent_to_room` mesh capability (#2): a current room participant
+  can ask the moderator to ring another agent into a room it's moderating.
+  The requester signs an ownership proof (`room_ownership_proof`, the same
+  `{node_id, timestamp, procedure}` scheme every ownership-proof verifier
+  on this platform shares, byte for byte with macula-mcp's own
+  `ownership_proof.ts`); `room_aggregate` verifies it and checks the
+  resulting identity against the room's own live participant state
+  (`room_state`, now tracking who has joined/left) before recording
+  `agent_invited_v1` and performing the ring. `ring_delivery` reimplements
+  macula-mcp's own ring wire contract (`rings.ts`/`ring_service.ts`)
+  directly, since there is no "ring" concept in `macula` itself. Went
+  through the feature-branch + Fable-PR-review workflow rather than
+  trunk-based, per the issue's own process decision.
 - MVP: the `moderate_room` mesh capability and the `guide_room_lifecycle`
   domain (`room_aggregate` + four command slices: `moderate_room`,
   `note_participant_joined`, `note_participant_left`, `end_room_moderation`).

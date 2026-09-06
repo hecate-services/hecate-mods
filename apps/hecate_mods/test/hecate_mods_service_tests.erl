@@ -66,12 +66,15 @@ health_is_down_without_the_read_model_and_green_with_it_test() ->
     ?assertEqual(ok, ?SERVICE:health()),
     ok = hecate_mods_test_db:teardown(Db).
 
-%% One capability now: moderate a room (macula-io/hecate-mods#1). The
-%% assertion still exists so that adding a SECOND one breaks this test and
-%% makes someone write down what the service can now additionally do.
-announces_moderate_room_capability_test() ->
+%% Two capabilities now: moderate a room (#1) and invite an agent into
+%% one (#2). The assertion still exists so that adding a THIRD one
+%% breaks this test and makes someone write down what the service can
+%% now additionally do.
+announces_moderate_room_and_invite_capabilities_test() ->
     ?assertMatch([#{name := <<"hecate_mods.moderate_room">>, version := 1,
-                    handler := {moderate_room_responder, []}}],
+                    handler := {moderate_room_responder, []}},
+                  #{name := <<"hecate_mods.invite_agent_to_room">>, version := 1,
+                    handler := {invite_agent_to_room_responder, []}}],
                  ?SERVICE:capabilities()).
 
 identity_spec_has_the_shape_hecate_om_expects_test() ->
@@ -83,14 +86,15 @@ identity_spec_has_the_shape_hecate_om_expects_test() ->
     ?assert(is_integer(Ttl) andalso Ttl > 0).
 
 %% A resource this service is not authorised for is a publish the realm would
-%% refuse once UCAN delegation lands. `moderate_room' is the one action this
-%% service performs and the one it declares; `agents.room.*' is a wildcard,
-%% not an enumeration, because which rooms exist is decided at runtime by
-%% callers of `moderate_room', never known at boot (same reasoning as
-%% hecate-mail's `mailboxes/*').
+%% refuse once UCAN delegation lands. `agents.room.*' is a wildcard, not an
+%% enumeration, because which rooms exist is decided at runtime by callers
+%% of `moderate_room', never known at boot (same reasoning as hecate-mail's
+%% `mailboxes/*'). The outgoing ring call is deliberately NOT in resources
+%% here -- see `identity_spec/0''s own comment on why that's an open
+%% question, not an oversight.
 authority_matches_what_is_announced_test() ->
     #{actions := Actions, resources := Resources} = ?SERVICE:identity_spec(),
-    ?assertEqual([<<"moderate_room">>], Actions),
+    ?assertEqual([<<"moderate_room">>, <<"invite_agent_to_room">>], Actions),
     ?assertEqual([<<"agents.room.*">>], Resources).
 
 %% The supervisor's DECLARED children, not an actually-started tree:

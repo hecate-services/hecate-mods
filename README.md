@@ -2,17 +2,18 @@
 
 **Moderator agent that keeps a mesh room alive when other participants leave**
 
-## Status: moderate_room MVP
+## Status: moderate_room + invite_agent_to_room
 
 The service boots, joins the mesh, answers `/health` on 8462, and answers
-one mesh capability: `hecate_mods.moderate_room`. It records room lifecycle
-facts (formed, joined, left, ended) via an event-sourced `guide_room_lifecycle`
-domain and ends moderation automatically after a configurable idle timeout.
-See #1.
+two mesh capabilities: `hecate_mods.moderate_room` and
+`hecate_mods.invite_agent_to_room`. It records room lifecycle facts
+(formed, joined, left, ended, invited) via an event-sourced room domain,
+ends moderation automatically after a configurable idle timeout, and lets
+a verified current participant ask the moderator to ring another agent
+into the room. See #1 and #2.
 
 Both `capabilities()` and `identity_spec()`'s `actions`/`resources` grow
-only when the thing they name exists, still — `invite_agent_to_room` (#2)
-is not announced yet.
+only when the thing they name exists.
 
 ## Design
 
@@ -39,7 +40,14 @@ Settled, 2026-09-06 (brainstorm with Raf):
   the moderator to invite another agent in. #2 — the one piece of this
   design with real security teeth (mesh RPCs have no built-in auth), so
   it's the first thing in this repo going through feature-branch +
-  Fable-reviewed PR instead of trunk-based. **Not built yet.**
+  Fable-reviewed PR instead of trunk-based. **Implemented, #2** — the
+  requester signs an ownership proof (the same `{node_id, timestamp,
+  procedure}` scheme every service in this platform verifies, byte for
+  byte with macula-mcp's own `ownership_proof.ts`), which `room_aggregate`
+  verifies BEFORE checking that identity against the room's own live
+  participant state -- never a caller-supplied claim. hecate-mods then
+  rings the target as itself (its own identity), on the requester's
+  behalf.
 - Voting/polling: raised, deliberately deferred. #3
 - Bot avatar: no wire format change needed, derive from the existing
   petname client-side whenever a UI wants one. #4
@@ -60,6 +68,37 @@ by `active_rooms_reaper` via `hecate_om_pubsub:ensure_subscriptions/1`
 (both on its periodic tick and right after `moderate_room` succeeds) —
 never a static `subscriptions/0` list, since which rooms exist is decided
 at runtime.
+
+### How inviting works (#2)
+
+Same starting point as rooms: there is no "ring" concept in `macula`
+either. `ring_delivery` reimplements macula-mcp's own wire contract
+directly from source (`rings.ts`, `ring_service.ts`,
+`ownership_proof.ts`) — the `{kind, ring_id, from, to, purpose,
+room_topic, sent_at}` shape, `agent.<node_id>.ring` as the procedure
+name, and the identical `{node_id, timestamp, procedure}` signed
+message every ownership-proof verifier on this platform shares (see
+`room_ownership_proof`'s own doc). hecate-mods rings the target as
+itself — its own identity, its own keypair — on the requester's behalf,
+per the issue's own framing.
+
+Two things are deliberately **not** reimplemented, noted here so they
+read as a scope decision rather than a gap found later: the reply's own
+proof is not verified (that protects the *ringer's* trust in an answer;
+the security property #2 asks for is the authorization gate on who may
+trigger a ring at all, enforced before `ring_delivery` ever runs), and
+there is no direct-dial fallback or wait-for-join. The plain answer
+(accepted/declined/deferred/unreachable) is relayed to the caller as-is.
+
+⚠ **Open question, flagged for review + a live test before this ships**:
+the outgoing ring call uses the mesh's default (all-zero) realm, not
+hecate-mods' own `HECATE_REALM` — `agent.<node_id>.ring` is served under
+the same default realm `mesh_hello`/`mesh_ring`/`mesh_rooms` use, per this
+workspace's own convention, not under any per-service scope. Verified so
+far: the signed-proof wire format round-trips correctly against
+`room_ownership_proof` (`ring_delivery_tests.erl`). NOT yet verified: an
+actual ring landing on a real target agent from a running hecate-mods
+node, which needs live infrastructure this review didn't have.
 
 ## Running it
 
