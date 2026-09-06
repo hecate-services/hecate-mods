@@ -55,14 +55,24 @@ info_version_matches_the_application_test() ->
     #{version := Reported} = ?SERVICE:info(),
     ?assertEqual(list_to_binary(Vsn), Reported).
 
-health_is_green_test() ->
-    ?assertEqual(ok, ?SERVICE:health()).
+%% Health is the read model's health. Without one open, the reaper and
+%% boot-time resubscription both have nothing to read, so that is `down',
+%% not a shrug; with one open it is green. Both halves are asserted so a
+%% future "always ok" regression fails here.
+health_is_down_without_the_read_model_and_green_with_it_test() ->
+    persistent_term:erase(hecate_om_read_model_db),
+    ?assertEqual({down, no_read_model}, ?SERVICE:health()),
+    Db = hecate_mods_test_db:setup(),
+    ?assertEqual(ok, ?SERVICE:health()),
+    ok = hecate_mods_test_db:teardown(Db).
 
-%% An empty list is the correct answer for a service that does nothing yet. The
-%% assertion is here so that adding a capability breaks a test and makes someone
-%% write down what the service can now actually do.
-announces_no_capability_yet_test() ->
-    ?assertEqual([], ?SERVICE:capabilities()).
+%% One capability now: moderate a room (macula-io/hecate-mods#1). The
+%% assertion still exists so that adding a SECOND one breaks this test and
+%% makes someone write down what the service can now additionally do.
+announces_moderate_room_capability_test() ->
+    ?assertMatch([#{name := <<"hecate_mods.moderate_room">>, version := 1,
+                    handler := {moderate_room_responder, []}}],
+                 ?SERVICE:capabilities()).
 
 identity_spec_has_the_shape_hecate_om_expects_test() ->
     #{scope := Scope, actions := Actions,
@@ -73,23 +83,65 @@ identity_spec_has_the_shape_hecate_om_expects_test() ->
     ?assert(is_integer(Ttl) andalso Ttl > 0).
 
 %% A resource this service is not authorised for is a publish the realm would
-%% refuse once UCAN delegation lands. Asking for nothing and claiming nothing
-%% must stay in step, so the two are asserted together.
+%% refuse once UCAN delegation lands. `moderate_room' is the one action this
+%% service performs and the one it declares; `agents.room.*' is a wildcard,
+%% not an enumeration, because which rooms exist is decided at runtime by
+%% callers of `moderate_room', never known at boot (same reasoning as
+%% hecate-mail's `mailboxes/*').
 authority_matches_what_is_announced_test() ->
     #{actions := Actions, resources := Resources} = ?SERVICE:identity_spec(),
-    ?assertEqual([], ?SERVICE:capabilities()),
-    ?assertEqual([], Actions),
-    ?assertEqual([], Resources).
+    ?assertEqual([<<"moderate_room">>], Actions),
+    ?assertEqual([<<"agents.room.*">>], Resources).
 
-%% The supervisor starts and stops cleanly on its own, without hecate_om. It has
-%% no children as generated; this asserts the tree is startable, not that it does
-%% any work.
-supervisor_starts_and_stops_test() ->
-    {ok, Pid} = hecate_mods_sup:start_link(),
-    ?assert(is_process_alive(Pid)),
-    ?assertEqual([], supervisor:which_children(Pid)),
-    unlink(Pid),
-    exit(Pid, shutdown).
+%% The supervisor's DECLARED children, not an actually-started tree:
+%% `room_lifecycle_to_active_rooms' (the projection) and
+%% `active_rooms_reaper' both genuinely depend on `hecate_om' already
+%% running (the event store, the read model, `hecate_om_pubsub''s own
+%% subscription gen_server) -- real platform services this test does not
+%% boot, unlike the empty scaffold this test originally covered. Calling
+%% `init/1' directly exercises the wiring (right module, right child ids,
+%% right start order) without starting a process tree that would crash on
+%% a missing live mesh, which is exactly the boundary a live/integration
+%% check (not a unit test) should cover instead.
+supervisor_declares_the_projection_and_the_reaper_test() ->
+    {ok, {_SupFlags, Children}} = hecate_mods_sup:init([]),
+    Ids = [Id || #{id := Id} <- Children],
+    ?assertEqual([room_lifecycle_to_active_rooms, active_rooms_reaper], Ids).
+
+%%==============================================================================
+%% The config the store cannot boot without
+%%==============================================================================
+
+%% ⚠ A SIBLING SERVICE'S FLEET CRASH-LOOPED ON TWO OF THREE NODES FOR WANT OF THE
+%% `evoq' BLOCK. Same guard as `hecate_mail_service_tests', other repo.
+the_evoq_adapter_is_configured_wherever_a_store_is_opened_test() ->
+    {ok, Text} = file:read_file(alongside("config/sys.config.src")),
+    ?assert(erlang:function_exported(?SERVICE, store_id, 0)),
+    lists:foreach(
+      fun(Needed) ->
+              ?assertNotEqual(nomatch, binary:match(Text, Needed),
+                              {missing_from_sys_config, Needed})
+      end,
+      [<<"{evoq,">>, <<"event_store_adapter">>, <<"subscription_adapter">>,
+       <<"reckon_evoq_adapter">>]).
+
+the_store_id_agrees_between_erlang_and_config_test() ->
+    {ok, Text} = file:read_file(alongside("config/sys.config.src")),
+    Declared = atom_to_binary(?SERVICE:store_id(), utf8),
+    ?assertNotEqual(nomatch, binary:match(Text, Declared),
+                    {store_id_not_in_sys_config, Declared}).
+
+the_data_directory_is_answerable_test() ->
+    ?assert(erlang:function_exported(?SERVICE, data_dir, 0)),
+    ?assert(is_list(?SERVICE:data_dir())),
+    ?assertNotEqual("", ?SERVICE:data_dir()).
+
+%% The read model's database name is what `active_rooms_store' addresses
+%% via `hecate_om:read_model()' -- nothing checks the two agree except a
+%% human reading both files, same class of guard as the store id above.
+the_read_model_id_is_answerable_test() ->
+    ?assert(erlang:function_exported(?SERVICE, read_model_id, 0)),
+    ?assert(is_binary(?SERVICE:read_model_id())).
 
 %%==============================================================================
 %% The runtime is pinned in two places, and neither is the one you are running

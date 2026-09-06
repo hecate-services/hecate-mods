@@ -2,15 +2,17 @@
 
 **Moderator agent that keeps a mesh room alive when other participants leave**
 
-## Status: scaffold
+## Status: moderate_room MVP
 
-The service boots, joins the mesh and answers `/health` on 8462. It
-does nothing else yet.
+The service boots, joins the mesh, answers `/health` on 8462, and answers
+one mesh capability: `hecate_mods.moderate_room`. It records room lifecycle
+facts (formed, joined, left, ended) via an event-sourced `guide_room_lifecycle`
+domain and ends moderation automatically after a configurable idle timeout.
+See #1.
 
-It announces no capability and asks the realm for no authority, because it can do
-nothing yet. Both lists grow when the thing they name exists. Advertising a
-capability before it exists puts a lie on the mesh where another service can find
-it and call it.
+Both `capabilities()` and `identity_spec()`'s `actions`/`resources` grow
+only when the thing they name exists, still — `invite_agent_to_room` (#2)
+is not announced yet.
 
 ## Design
 
@@ -22,28 +24,42 @@ a `moderate_room` command spins up a supervised `guide_room_lifecycle` actor
 that stays in the room so it can outlive everyone who happened to be in it
 at the time.
 
-Settled, 2026-09-06 (brainstorm with Raf), tracked as issues rather than
-implemented here yet:
+Settled, 2026-09-06 (brainstorm with Raf):
 
 - **No content recording.** The moderator never transcribes conversation —
   that stays each participant's own prerogative. It records lifecycle facts
-  only: formed, joined, left, ended. #1
+  only: formed, joined, left, ended. **Implemented, #1.**
 - **Idle timeout, configurable, default 96h**, reset on a participant
   joining (not on leave, not on message activity — the moderator has no
   visibility into the latter by design). No join within the window ends
-  moderation. #1
+  moderation. **Implemented, #1** — `active_rooms_reaper` sweeps a thin
+  read model (`active_rooms_store`, just `room_topic` + `last_joined_at`)
+  every 15 minutes; the room aggregate itself has no per-room timer.
 - **Invite is participant-gated.** Only a current room participant can ask
   the moderator to invite another agent in. #2 — the one piece of this
   design with real security teeth (mesh RPCs have no built-in auth), so
   it's the first thing in this repo going through feature-branch +
-  Fable-reviewed PR instead of trunk-based.
+  Fable-reviewed PR instead of trunk-based. **Not built yet.**
 - Voting/polling: raised, deliberately deferred. #3
 - Bot avatar: no wire format change needed, derive from the existing
   petname client-side whenever a UI wants one. #4
 
-None of this is implemented yet — the service still does nothing but
-join the mesh and answer `/health`, honestly, per the scaffold's own rule
-about not advertising a capability before it exists.
+### How a room gets watched
+
+There is no "room" concept in `macula` itself — `agents.room.<hex>` is a
+plain pubsub topic, and the join/leave envelope shape is macula-mcp's own
+convention (`envelope.ts`), not something the Erlang mesh core knows
+about. `room_topic_listener` (a `macula_subscriber`) decodes that
+envelope directly and requires a **cryptographically verified publisher**
+(the mesh delivery's own `Meta.publisher_verified`), not just a
+self-claimed `from`, before treating a fact as a real join or leave —
+stronger than macula-mcp's own TS-side check, which only compares labels.
+
+Subscriptions are dynamic, one per currently-moderated room, reconciled
+by `active_rooms_reaper` via `hecate_om_pubsub:ensure_subscriptions/1`
+(both on its periodic tick and right after `moderate_room` succeeds) —
+never a static `subscriptions/0` list, since which rooms exist is decided
+at runtime.
 
 ## Running it
 
@@ -96,21 +112,28 @@ Six callbacks in `hecate_mods_service`, all required, all resolved **by name** b
 attribute turns a missing one into a compile error rather than an `undef` where
 nobody is watching, and the eunit suite guards the attribute itself.
 
-### Adding a store later
+### The store, and the read model alongside it
 
-This service has no `reckon-db` store, which is the right answer for most. The
-reckon-db applications run either way; what a store adds is a data directory, an
-open handle, and something written.
+This service owns a `reckon-db` event store (`store_id/0` + `data_dir/0`,
+`hecate_mods_store`) for `room_aggregate`, plus a `barrel_docdb` read model
+(`read_model_id/0`) for `active_rooms_store` — a THIN index (`room_topic` +
+`last_joined_at` only) so `active_rooms_reaper` can find idle rooms and
+resubscribe after a restart without enumerating the whole event store (see
+`hecate-parksim`'s `scavenge_aged_sessions` for the precedent, and
+`reckon-db`'s own `dcb.md` "When NOT to use DCB" for why its indexed reads
+aren't a substitute here). It is NOT a copy of aggregate state — full room
+state stays `room_aggregate`'s job, rehydrated from that room's own event
+stream.
 
-The cheapest way to get one is to scaffold again with `store=1`, which generates
-the callbacks, the config and the guards together.
-
-⚠ **By hand it is three things and not one, and the missing third crash-loops the
-node.** Export `store_id/0` and `data_dir/0`; add the `evoq` adapter block to
-`config/sys.config.src`, without which boot raises
-`{not_configured, event_store_adapter}` before any service code runs; and mount a
-volume in the compose file. A sibling service put two of three fleet nodes into a
-boot loop by doing the first and not the second.
+⚠ **The store is wired in three places, and the missing one crash-loops the
+node.** `store_id/0` + `data_dir/0` on `hecate_mods_service`; the `evoq`
+adapter block in `config/sys.config.src`, without which boot raises
+`{not_configured, event_store_adapter}` before any service code runs; and
+the volume mount in `deploy/docker-compose.yml`. A sibling service put two
+of three fleet nodes into a boot loop by doing the first and not the
+second — this repo's own scaffold had no store at all until this MVP
+added one by hand, cross-checking `hecate-om`'s own `store=1` template
+output for each of the three pieces rather than guessing.
 
 ## Licence
 
