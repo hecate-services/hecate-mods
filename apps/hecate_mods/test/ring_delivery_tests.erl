@@ -13,6 +13,16 @@
 ring_procedure_matches_macula_mcps_own_naming_test() ->
     ?assertEqual(<<"agent.", ?TARGET/binary, ".ring">>, ring_delivery:ring_procedure(?TARGET)).
 
+%% Fable review, hecate-mods#5: macula-mcp's own ring_service.ts compares
+%% the wire `to' field / procedure name against its own canonical
+%% (always lowercase) node id with exact case-sensitive equality.
+%% target_node_id is valid (per invite_agent_to_room_v1's own hex64
+%% check) in any case, so this module must normalize it itself rather
+%% than assume a caller already did.
+ring_procedure_lowercases_an_uppercase_target_test() ->
+    ?assertEqual(<<"agent.", ?TARGET/binary, ".ring">>,
+                 ring_delivery:ring_procedure(string:uppercase(?TARGET))).
+
 ring_proof_procedure_is_bound_to_the_ring_id_test() ->
     Got = ring_delivery:ring_proof_procedure(?TARGET, <<"deadbeef">>),
     ?assertEqual(<<"agent.", ?TARGET/binary, ".ring#ring:deadbeef">>, Got).
@@ -26,6 +36,11 @@ ring_args_has_rings_ts_shape_test() ->
     ?assertEqual(<<"purpose">>, maps:get(purpose, Args)),
     ?assertEqual(?ROOM, maps:get(room_topic, Args)),
     ?assert(is_integer(maps:get(sent_at, Args))).
+
+ring_args_lowercases_an_uppercase_target_in_the_to_field_test() ->
+    Args = ring_delivery:ring_args(<<"someringid">>, <<"fromhex">>, string:uppercase(?TARGET),
+                                   <<"purpose">>, ?ROOM),
+    ?assertEqual(?TARGET, maps:get(to, Args)).
 
 %% The actual wire-compatibility boundary: sign via with_identity_proof/4,
 %% then verify the exact same way room_ownership_proof (and, sharing the

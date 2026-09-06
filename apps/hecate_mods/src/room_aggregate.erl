@@ -82,10 +82,18 @@ guard_active(State, Fun) ->
 %% aggregate's participant set. Checking membership before verifying
 %% identity would let anyone claim to BE a participant without proving
 %% it, which is exactly the hole this desk exists to close.
+%%
+%% The proof is verified against `procedure(RoomTopic, TargetNodeId)' --
+%% bound to THIS invite, not the bare capability name (Fable review,
+%% hecate-mods#5: a proof bound only to the capability name would
+%% authorize replaying it against a different target or a different
+%% room the same requester is also in).
 guard_requester_is_participant(State, Payload) ->
     RequesterNodeId = maps:get(requester_node_id, Payload),
+    TargetNodeId = maps:get(target_node_id, Payload),
+    RoomTopic = maps:get(room_topic, Payload),
     Proof = maps:get(proof, Payload),
-    Procedure = invite_agent_to_room_v1:procedure(),
+    Procedure = invite_agent_to_room_v1:procedure(RoomTopic, TargetNodeId),
     verified(room_ownership_proof:verify(RequesterNodeId, Proof, Procedure),
              State, RequesterNodeId, Payload).
 

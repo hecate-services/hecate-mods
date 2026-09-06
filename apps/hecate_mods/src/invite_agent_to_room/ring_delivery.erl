@@ -62,20 +62,34 @@ dialed({ok, Pool}, {ok, KeyPair}, TargetNodeIdHex, RoomTopic, Purpose) ->
     ProofProcedure = ring_proof_procedure(TargetNodeIdHex, RingId),
     Payload = with_identity_proof(Args, KeyPair, FromNodeId, ProofProcedure),
     called(macula_client:call(Pool, ?ALL_ZERO_REALM, Procedure, Payload, ?CALL_TIMEOUT_MS));
-dialed({error, _}, _KeyPairResult, _TargetNodeIdHex, _RoomTopic, _Purpose) ->
-    #{unreachable => 1, reason => <<"mesh_unavailable">>};
-dialed(_MaculaClientResult, {error, no_keypair}, _TargetNodeIdHex, _RoomTopic, _Purpose) ->
-    #{unreachable => 1, reason => <<"hecate-mods has no signing keypair (ephemeral identity)">>}.
+dialed({error, MeshReason}, _KeyPairResult, _TargetNodeIdHex, _RoomTopic, _Purpose) ->
+    #{unreachable => 1, reason => <<"mesh_unavailable: ", (hecate_mods_reason:to_binary(MeshReason))/binary>>};
+%% Catches BOTH documented failure atoms hecate_om_identity:keypair/0
+%% can return (`no_keypair' -- a genuinely ephemeral identity -- and
+%% `not_booted' -- called before that gen_server has finished init, a
+%% real startup race its own module doc calls "piece H") rather than
+%% enumerating just the one this module's author first thought of
+%% (Fable review, hecate-mods#5: the original only matched `no_keypair'
+%% and crashed with function_clause on `not_booted').
+dialed({ok, _Pool}, {error, KeyPairReason}, _TargetNodeIdHex, _RoomTopic, _Purpose) ->
+    #{unreachable => 1,
+      reason => <<"hecate-mods has no signing keypair: ", (hecate_mods_reason:to_binary(KeyPairReason))/binary>>}.
 
 %% @doc `rings.ts''s `RingArgs' shape, exactly: kind, ring_id, from, to,
-%% purpose, room_topic, sent_at.
+%% purpose, room_topic, sent_at. `to' is lowercased here: macula-mcp's
+%% own `ring_service.ts' compares the wire `to' field against its own
+%% canonical (always lowercase) node id with exact case-sensitive
+%% equality, so an uppercase-hex target -- valid per
+%% `invite_agent_to_room_v1''s own hex64 check, which is
+%% case-insensitive -- would otherwise fail to route or verify at all
+%% (Fable review, hecate-mods#5).
 -spec ring_args(binary(), binary(), binary(), binary(), binary()) -> map().
 ring_args(RingId, FromNodeId, TargetNodeIdHex, Purpose, RoomTopic) ->
     #{
         kind => ?RING_KIND,
         ring_id => RingId,
         from => FromNodeId,
-        to => TargetNodeIdHex,
+        to => string:lowercase(TargetNodeIdHex),
         purpose => Purpose,
         room_topic => RoomTopic,
         sent_at => erlang:system_time(millisecond)
@@ -95,22 +109,22 @@ with_identity_proof(Args, KeyPair, FromNodeId, ProofProcedure) ->
         proof => #{timestamp => Timestamp, signature => Signature}
     }.
 
-ring_procedure(NodeIdHex) -> <<"agent.", NodeIdHex/binary, ".ring">>.
+%% @doc Lowercased for the same reason `ring_args/5''s own `to' field is
+%% -- this builds the literal `agent.<node_id>.ring' mesh procedure name
+%% the station routes on, which must match the callee's own registration
+%% byte for byte.
+ring_procedure(NodeIdHex) -> <<"agent.", (string:lowercase(NodeIdHex))/binary, ".ring">>.
 
 ring_proof_procedure(NodeIdHex, RingId) ->
     <<(ring_procedure(NodeIdHex))/binary, "#ring:", RingId/binary>>.
 
 called({ok, Payload}) -> parsed_reply(Payload);
-called({error, Reason}) -> #{unreachable => 1, reason => reason_binary(Reason)}.
+called({error, Reason}) -> #{unreachable => 1, reason => hecate_mods_reason:to_binary(Reason)}.
 
 parsed_reply(#{answer := Answer} = Payload) when Answer =:= 1; Answer =:= 2; Answer =:= 3 ->
     with_reason(#{answer => Answer}, maps:get(reason, Payload, undefined));
 parsed_reply(Other) ->
-    #{unreachable => 1, reason => <<"malformed reply: ", (reason_binary(Other))/binary>>}.
+    #{unreachable => 1, reason => <<"malformed reply: ", (hecate_mods_reason:to_binary(Other))/binary>>}.
 
 with_reason(Map, undefined) -> Map;
 with_reason(Map, Reason) when is_binary(Reason) -> Map#{reason => Reason}.
-
-reason_binary(R) when is_atom(R) -> atom_to_binary(R, utf8);
-reason_binary(R) when is_binary(R) -> R;
-reason_binary(R) -> iolist_to_binary(io_lib:format("~p", [R])).

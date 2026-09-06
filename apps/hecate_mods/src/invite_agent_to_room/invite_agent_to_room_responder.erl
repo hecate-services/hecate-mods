@@ -24,7 +24,7 @@ handle_request(Payload, State) ->
     Params = params(Payload),
     Reply = case invite_agent_to_room_v1:new(Params) of
         {ok, Cmd} -> authorized(maybe_invite_agent_to_room:dispatch(Cmd), Cmd);
-        {error, Reason} -> #{ok => 0, error => reason_to_binary(Reason)}
+        {error, Reason} -> #{ok => 0, error => hecate_mods_reason:to_binary(Reason)}
     end,
     {reply, Reply, State}.
 
@@ -35,7 +35,7 @@ authorized({ok, _Version, _Events}, Cmd) ->
         invite_agent_to_room_v1:get_purpose(Cmd)
     ));
 authorized({error, Reason}, _Cmd) ->
-    #{ok => 0, error => reason_to_binary(Reason)}.
+    #{ok => 0, error => hecate_mods_reason:to_binary(Reason)}.
 
 rung(#{answer := Answer} = Outcome) ->
     omit_undefined(#{ok => 1, answer => Answer, reason => maps:get(reason, Outcome, undefined)});
@@ -60,7 +60,3 @@ proof(Proof) when is_map(Proof) ->
     };
 proof(_NotAMap) ->
     #{}.
-
-reason_to_binary(R) when is_atom(R) -> atom_to_binary(R, utf8);
-reason_to_binary(R) when is_binary(R) -> R;
-reason_to_binary(R) -> iolist_to_binary(io_lib:format("~p", [R])).
